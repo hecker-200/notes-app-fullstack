@@ -5,26 +5,30 @@ This module contains authentication-related endpoints including
 user signup, login, and token management.
 """
 
-from datetime import timedelta
-from fastapi import APIRouter, HTTPException, status, Depends
+from datetime import timedelta #this is to set time for jwt token expiration
+from fastapi import APIRouter, HTTPException, status, Depends #basically for the routing
+# and to manage dependecies and handle errors
 from schemas import (
     UserSignUp, UserLogin, AuthResponse, UserResponse, 
     MessageResponse, ErrorResponse
-)
+)  #these are models that we have defined basically in our schemas.py folder which are pydantic models
+# have different functionalities
 from auth import (
     authenticate_user, create_access_token, get_current_active_user,
     ACCESS_TOKEN_EXPIRE_MINUTES
-)
-from crud import create_user
+) # these are the functions for authentication from auth.py
+from crud import create_user #this is basically one of the 4 functions to create user from crud
 
-router = APIRouter()
+router = APIRouter() # this basically acts as the main point of entry or call for the routing purpose
+#similar to express in mern
 
-
-@router.post(
+# this is for the signup route when we  click signup
+@router.post( 
     "/signup",
-    response_model=AuthResponse,
+    response_model=AuthResponse, # the model that we take here is the auth response one
     responses={
-        400: {"model": ErrorResponse, "description": "Email already registered"},
+        400: {"model": ErrorResponse, "description": "Email already registered"}, #we will  throw 400 
+        #422 error based on the type of error
         422: {"model": ErrorResponse, "description": "Validation error"}
     }
 )
@@ -48,14 +52,16 @@ async def signup(user_data: UserSignUp):
         # Create new user in database
         user = await create_user(user_data)
         
-        # Create access token
+        # Create access token this also puts time = time delta as the access token expiry 
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": str(user.id)},
+            data={"sub": str(user.id)}, # this is the payload for the jwt here we are using id as the payload
             expires_delta=access_token_expires
         )
         
         # Prepare user response (exclude sensitive data)
+
+        #here we are taking different fields basedon the input  of the user
         user_response = UserResponse(
             id=user.id,
             email=user.email,
@@ -66,14 +72,14 @@ async def signup(user_data: UserSignUp):
         
         return AuthResponse(
             access_token=access_token,
-            token_type="bearer",
+            token_type="bearer", #this is basically showing that it is the bearer of the token that it is a part of
             expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Convert to seconds
             user=user_response
         )
         
-    except HTTPException:
+    except HTTPException: #this is again a part of try catch only incase this error pops up here we re raise it
         raise
-    except Exception as e:
+    except Exception as e: # this is where any unexpected error is caught like db errors or stack traces
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create user account"
@@ -104,13 +110,15 @@ async def login(user_credentials: UserLogin):
         HTTPException: If credentials are invalid
     """
     # Authenticate user credentials
+    #defined in auth.py function and fr
     user = await authenticate_user(user_credentials.email, user_credentials.password)
     
-    if not user:
+    if not user: #if ew dont get any response then this error is raised
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"WWW-Authenticate": "Bearer"}, # this is a method that is used to raise 401 error
+            #basically telling that this is the method to authenticate and only authenticate bearer
         )
     
     # Create access token
