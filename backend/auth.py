@@ -52,7 +52,8 @@ def get_password_hash(password: str) -> str:
     Returns:
         Hashed password string
     """
-    return pwd_context.hash(password)
+    return pwd_context.hash(password) #hash function is imported from bcrypt and then runs and 
+    #passes it through a cryptographic algorithm 
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -66,15 +67,15 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     Returns:
         Encoded JWT token string
     """
-    to_encode = data.copy()
+    to_encode = data.copy() # we store the users id , role in this payload
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.utcnow() + expires_delta # this is basically current timestamp + delta 
     else:
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire}) # now we have the data encoded again with the expiry in it 
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return encoded_jwt # this is the new jw token 
 
 
 async def get_user_by_email(email: str) -> Optional[UserInDB]:
@@ -134,6 +135,9 @@ async def authenticate_user(email: str, password: str) -> Optional[UserInDB]:
     if not verify_password(password, user.hashed_password):
         return None
     return user
+
+#to bascially if we just want to authenticate we are just gonna verify passwords nothing else for a
+#authenticating
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> UserInDB:
