@@ -1,8 +1,11 @@
 """
 CRUD Operations for Notes and Users
 
-This module contains all database CRUD operations including
-optimistic concurrency control and atomic updates.
+This module contains all database CRUD operations including:
+- User account creation with password hashing
+- Note creation, reading, updating, and deletion
+- Optimistic concurrency control using version numbers (prevents overwriting changes from another session)
+- Atomic operations (ensuring MongoDB executes updates/deletes safely in a single step)
 """
 
 from datetime import datetime
@@ -18,23 +21,25 @@ from schemas import (
 from auth import get_password_hash
 
 
-# User CRUD Operations
+# =====================================================
+# USER CRUD OPERATIONS
+# =====================================================
+
 async def create_user(user_data: UserSignUp) -> UserInDB:
     """
-    Create a new user in the database
+    Create a new user in the database.
     
-    Args:
-        user_data: User registration data
-    
-    Returns:
-        UserInDB object for the created user
-    
-    Raises:
-        HTTPException: If email already exists
+    Detailed Flow:
+    - Receives a UserSignUp object (email, password, full name).
+    - Checks if a user with the same email already exists.
+    - If unique, hashes the password before saving (NEVER store plain text).
+    - Inserts a new user document with timestamps and "is_active" flag.
+    - Returns the newly created user wrapped in a UserInDB schema.
+    - If email already exists → raises 400 BAD REQUEST.
     """
     users_collection = get_users_collection()
     
-    # Check if user already exists
+    # 1. Check for duplicate email
     existing_user = await users_collection.find_one({"email": user_data.email})
     if existing_user:
         raise HTTPException(
@@ -42,7 +47,7 @@ async def create_user(user_data: UserSignUp) -> UserInDB:
             detail="Email already registered"
         )
     
-    # Create user document
+    # 2. Build user document (hashed password for security!)
     user_doc = {
         "email": user_data.email,
         "hashed_password": get_password_hash(user_data.password),
@@ -52,27 +57,32 @@ async def create_user(user_data: UserSignUp) -> UserInDB:
     }
     
     try:
+        # 3. Insert user into DB
         result = await users_collection.insert_one(user_doc)
         user_doc["_id"] = result.inserted_id
         return UserInDB(**user_doc)
     except DuplicateKeyError:
+        # 4. Handle edge-case of race condition: two users signing up same email simultaneously
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
 
 
-# Notes CRUD Operations
+# =====================================================
+# NOTES CRUD OPERATIONS
+# =====================================================
+
 async def create_note(note_data: NoteCreate, user_id: str) -> NoteResponse:
     """
-    Create a new note for a user
+    Create a new note for a specific user.
     
-    Args:
-        note_data: Note creation data
-        user_id: User ID as string
-    
-    Returns:
-        NoteResponse object for the created note
+    Detailed Flow:
+    - Takes note input (title, content, tags, favorite flag).
+    - Attaches the note to a user by user_id.
+    - Initializes `created_at` and `updated_at`.
+    - Sets an initial version = 1 (used for concurrency control later).
+    - Inserts into DB, returns the saved note wrapped as NoteResponse.
     """
     notes_collection = get_notes_collection()
     
@@ -85,7 +95,7 @@ async def create_note(note_data: NoteCreate, user_id: str) -> NoteResponse:
         "user_id": ObjectId(user_id),
         "created_at": current_time,
         "updated_at": current_time,
-        "version": 1  # Initial version for optimistic concurrency
+        "version": 1  # Start at version 1 for optimistic concurrency
     }
     
     result = await notes_collection.insert_one(note_doc)
@@ -96,15 +106,13 @@ async def create_note(note_data: NoteCreate, user_id: str) -> NoteResponse:
 
 async def get_user_notes(user_id: str, skip: int = 0, limit: int = 50) -> List[NoteResponse]:
     """
-    Get all notes for a user with pagination
+    Fetch all notes belonging to a user with pagination.
     
-    Args:
-        user_id: User ID as string
-        skip: Number of records to skip (for pagination)
-        limit: Maximum number of records to return
-    
-    Returns:
-        List of NoteResponse objects
+    Detailed Flow:
+    - Finds all notes that belong to the given user_id.
+    - Applies sorting (newest first by created_at).
+    - Applies skip/limit for pagination.
+    - Iterates through results and converts to NoteResponse objects.
     """
     notes_collection = get_notes_collection()
     
@@ -121,14 +129,12 @@ async def get_user_notes(user_id: str, skip: int = 0, limit: int = 50) -> List[N
 
 async def get_note_by_id(note_id: str, user_id: str) -> Optional[NoteResponse]:
     """
-    Get a specific note by ID for a user
+    Fetch a single note by its ID, only if it belongs to the given user.
     
-    Args:
-        note_id: Note ID as string
-        user_id: User ID as string
-    
-    Returns:
-        NoteResponse object if found, None otherwise
+    Detailed Flow:
+    - Looks up a note where _id matches note_id AND user_id matches.
+    - This ensures a user cannot access another user’s notes.
+    - If found, wraps into NoteResponse; otherwise returns None.
     """
     notes_collection = get_notes_collection()
     
@@ -141,6 +147,7 @@ async def get_note_by_id(note_id: str, user_id: str) -> Optional[NoteResponse]:
         if note_doc:
             return NoteResponse(**note_doc)
     except Exception:
+        # Could fail if note_id is not a valid ObjectId
         pass
     
     return None
@@ -148,27 +155,26 @@ async def get_note_by_id(note_id: str, user_id: str) -> Optional[NoteResponse]:
 
 async def update_note(note_id: str, user_id: str, note_update: NoteUpdate) -> NoteResponse:
     """
-    Update a note with optimistic concurrency control
+    Update a note using optimistic concurrency control (OCC).
     
-    This function implements optimistic concurrency control using version numbers.
-    If a version is provided in the update, it must match the current version
-    in the database to prevent lost updates.
+    Why OCC?
+    - Imagine 2 sessions editing the same note at once.
+    - Without OCC, the last writer overwrites the other → "lost update" problem.
+    - With OCC, updates must include the correct version number.
+    - If the version doesn’t match DB, a 409 Conflict is raised.
     
-    Args:
-        note_id: Note ID as string
-        user_id: User ID as string
-        note_update: Note update data
-    
-    Returns:
-        Updated NoteResponse object
-    
-    Raises:
-        HTTPException: If note not found or version conflict
+    Detailed Flow:
+    - Builds an update_doc with only provided fields.
+    - Sets new updated_at timestamp.
+    - If a version is included, it’s added to the filter query (ensuring OCC).
+    - Uses atomic `find_one_and_update` so DB guarantees only one succeeds.
+    - If no match found → either note doesn’t exist OR version mismatch.
+    - Returns updated note if successful.
     """
     notes_collection = get_notes_collection()
     
     try:
-        # Build update document with only provided fields
+        # 1. Build update document
         update_doc = {"updated_at": datetime.utcnow()}
         
         if note_update.title is not None:
@@ -180,39 +186,41 @@ async def update_note(note_id: str, user_id: str, note_update: NoteUpdate) -> No
         if note_update.is_favorite is not None:
             update_doc["is_favorite"] = note_update.is_favorite
         
-        # Prepare filter for the update operation
+        # 2. Filter: must match correct note_id + user_id
         filter_doc = {
             "_id": ObjectId(note_id),
             "user_id": ObjectId(user_id)
         }
         
-        # If version is provided, include it in the filter for optimistic concurrency
+        # 3. Enforce optimistic concurrency: match version too if provided
         if note_update.version is not None:
             filter_doc["version"] = note_update.version
-            update_doc["$inc"] = {"version": 1}  # Increment version
+            update_doc["$inc"] = {"version": 1}
         else:
-            update_doc["$inc"] = {"version": 1}  # Increment version
+            update_doc["$inc"] = {"version": 1}
         
-        # Perform atomic update
+        # 4. Perform atomic update
         result = await notes_collection.find_one_and_update(
             filter_doc,
             {"$set": update_doc, "$inc": update_doc.get("$inc", {})},
-            return_document=True  # Return updated document
+            return_document=True  # Ask DB to return updated document
         )
         
         if result is None:
-            # Check if note exists but version mismatched
+            # 5. Determine why update failed
             existing_note = await notes_collection.find_one({
                 "_id": ObjectId(note_id),
                 "user_id": ObjectId(user_id)
             })
             
             if existing_note:
+                # Note exists but version mismatch → conflict
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Note was modified by another operation. Please refresh and try again."
                 )
             else:
+                # Note does not exist at all
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Note not found"
@@ -229,17 +237,13 @@ async def update_note(note_id: str, user_id: str, note_update: NoteUpdate) -> No
 
 async def delete_note(note_id: str, user_id: str) -> bool:
     """
-    Delete a note (atomic operation)
+    Delete a note (atomic).
     
-    Args:
-        note_id: Note ID as string
-        user_id: User ID as string
-    
-    Returns:
-        True if note was deleted, False if not found
-    
-    Raises:
-        HTTPException: If invalid ID format
+    Detailed Flow:
+    - Tries to delete a note with both note_id and user_id.
+    - Ensures users can delete only their own notes.
+    - Returns True if deleted, False if not found.
+    - Raises 400 if note_id is not valid.
     """
     notes_collection = get_notes_collection()
     
@@ -250,7 +254,6 @@ async def delete_note(note_id: str, user_id: str) -> bool:
         })
         
         return result.deleted_count > 0
-        
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -260,13 +263,16 @@ async def delete_note(note_id: str, user_id: str) -> bool:
 
 async def get_user_notes_count(user_id: str) -> int:
     """
-    Get total count of notes for a user
+    Count how many notes a user owns.
     
-    Args:
-        user_id: User ID as string
+    Useful for:
+    - Dashboards
+    - Quotas / limits
+    - Analytics
     
-    Returns:
-        Total number of notes for the user
+    Detailed Flow:
+    - Runs a count_documents query filtered by user_id.
+    - Returns integer count.
     """
     notes_collection = get_notes_collection()
     
@@ -279,20 +285,19 @@ async def get_user_notes_count(user_id: str) -> int:
 
 async def search_user_notes(user_id: str, search_query: str, skip: int = 0, limit: int = 50) -> List[NoteResponse]:
     """
-    Search notes for a user by title or content
+    Search notes for a user by keyword.
     
-    Args:
-        user_id: User ID as string
-        search_query: Text to search for
-        skip: Number of records to skip (for pagination)
-        limit: Maximum number of records to return
-    
-    Returns:
-        List of matching NoteResponse objects
+    Detailed Flow:
+    - Matches notes that belong to the user.
+    - Performs case-insensitive regex search on:
+        • Title
+        • Content
+        • Tags
+    - Applies skip/limit for pagination.
+    - Returns results as NoteResponse list.
     """
     notes_collection = get_notes_collection()
     
-    # Create text search query
     filter_doc = {
         "user_id": ObjectId(user_id),
         "$or": [
