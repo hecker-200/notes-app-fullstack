@@ -5,8 +5,8 @@ This module contains all notes-related endpoints including
 CRUD operations for notes with proper authentication.
 """
 
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, status, Depends, Query
+from typing import List, Optional # this is optional as in latest python versions we dont need to import
+from fastapi import APIRouter, HTTPException, status, Depends, Query # again we are importing the functions necessary from fastapi module
 from schemas import (
     NoteCreate, NoteUpdate, NoteResponse, NotesListResponse,
     MessageResponse, ErrorResponse, UserInDB
@@ -18,21 +18,26 @@ from crud import (
     search_user_notes
 )
 
-router = APIRouter()
+router = APIRouter() # same as before its a way to define your routes which enables grouping similar routes 
 
 
 @router.get(
-    "/",
+    "/", # this is the main one and opening info we get frm the main page
     response_model=NotesListResponse,
     responses={
         401: {"model": ErrorResponse, "description": "Not authenticated"}
     }
 )
-async def get_notes(
+async def get_notes( #the skip basically tells us the number of notes that preexist so taht only the 
+    #extra notes need to be loaded or brought 
+
+    #limit is there basically to reduce the load on the backend by reducing the number 
     skip: int = Query(0, ge=0, description="Number of notes to skip"),
     limit: int = Query(50, ge=1, le=100, description="Maximum number of notes to return"),
+    #this is bascially to check if the link has some keyword in it and if yes search for that 
     search: Optional[str] = Query(None, description="Search query for notes"),
-    current_user: UserInDB = Depends(get_current_active_user)
+    current_user: UserInDB = Depends(get_current_active_user) #this basically ensures with the help of 
+    #the jwt token that whose account this is and whose info to show to
 ):
     """
     Get all notes for the current user
@@ -94,6 +99,8 @@ async def create_new_note(
         NoteResponse for the created note
     """
     try:
+
+        #this is basically to create a new note if no error then we just return the new note 
         note = await create_note(note_data, str(current_user.id))
         return note
     except Exception as e:
@@ -102,7 +109,8 @@ async def create_new_note(
             detail="Failed to create note"
         )
 
-
+#here we are basically searching for a given note id and searching if that exists if it does 
+# we provide it with the schema of note response
 @router.get(
     "/{note_id}",
     response_model=NoteResponse,
@@ -112,6 +120,8 @@ async def create_new_note(
         400: {"model": ErrorResponse, "description": "Invalid note ID"}
     }
 )
+
+#
 async def get_note(
     note_id: str,
     current_user: UserInDB = Depends(get_current_active_user)
@@ -131,6 +141,9 @@ async def get_note(
     Raises:
         HTTPException: If note not found or invalid ID
     """
+
+    #again mainly here we are trying to just check if the user is authenticated and whether he shud be 
+    #allowed to access
     note = await get_note_by_id(note_id, str(current_user.id))
     
     if not note:
@@ -141,6 +154,7 @@ async def get_note(
     
     return note
 
+#this is basically to update a node first we check if any error issue comes in
 
 @router.put(
     "/{note_id}",
@@ -156,6 +170,8 @@ async def update_existing_note(
     note_id: str,
     note_update: NoteUpdate,
     current_user: UserInDB = Depends(get_current_active_user)
+
+    #this step is still a check if its an existing user
 ):
     """
     Update an existing note
